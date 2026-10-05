@@ -1,0 +1,13 @@
+.env
+state.json
+bot.log*
+trades.csv
+daily_pnl.csv
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+backtest_data/
+bot_console.log
+backtest_results*.png
+backtest_trades*.csv

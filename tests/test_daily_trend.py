@@ -147,3 +147,19 @@ def test_btc_is_disabled_in_shipped_config():
     assert "BTC/USD" not in config.INSTRUMENTS
     assert "momentum_breakout" not in config.active_strategies()
     assert set(config.INSTRUMENTS) == {"SPY", "QQQ", "GLD", "USO"}
+
+
+def test_unfilled_entry_is_retried_on_next_poll_then_given_up_after_three(env, monkeypatch):
+    """Regression: an entry order that never fills must not mark the daily bar as handled."""
+    calls = []
+    monkeypatch.setattr(env.pf, "open_position", lambda *a, **k: calls.append(a[0].symbol))
+    bar = env.md.bars["SPY"].index[-1].isoformat()
+
+    env.bot.run_strategy_cycle("daily_trend")
+    assert calls == ["SPY"] and env.pf.last_bar("SPY") is None      # not marked: will retry
+    env.bot.run_strategy_cycle("daily_trend")
+    assert calls == ["SPY", "SPY"] and env.pf.last_bar("SPY") is None
+    env.bot.run_strategy_cycle("daily_trend")                        # third failure -> give up
+    assert calls == ["SPY", "SPY", "SPY"] and env.pf.last_bar("SPY") == bar
+    env.bot.run_strategy_cycle("daily_trend")                        # bar settled: no more orders
+    assert calls == ["SPY", "SPY", "SPY"]

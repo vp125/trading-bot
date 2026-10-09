@@ -6,10 +6,12 @@ Run from the project root:
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Dict, List
@@ -25,6 +27,7 @@ from bot.api_utils import AUTH_STATUS, status_of  # noqa: E402
 from bot.data_feed import MarketData, bar_seconds  # noqa: E402
 from bot.portfolio import Portfolio  # noqa: E402
 from bot.risk_manager import RiskManager  # noqa: E402
+from bot.status import build_snapshot, position_view, write_snapshot  # noqa: E402
 from bot.strategies import STRATEGY_CLASSES  # noqa: E402
 
 log = logging.getLogger("bot")
@@ -63,6 +66,10 @@ class TradingBot:
                            for name, params in config.STRATEGY_PARAMS.items()}
         self._stop = False
         self._entry_attempts: Dict[tuple, int] = {}
+        self.last_signals: Dict[str, dict] = {}      # latest decision per symbol, for the monitor
+        self._last_price: Dict[str, float] = {}
+        self._started_at = datetime.now(timezone.utc).isoformat()
+        self.status_path = config.STATUS_FILE
         for inst in config.INSTRUMENTS.values():
             strat = self.strategies[inst.strategy]
             self.portfolio.cooldown_seconds[inst.symbol] = (
@@ -105,6 +112,10 @@ class TradingBot:
         log.info("[%s] %s bar=%s -> %s (%s)", strat.name, inst.symbol, bar_ts,
                  "HOLD" if signal_.is_hold else f"exit={signal_.exit} enter={signal_.enter}",
                  signal_.reason)
+        self.last_signals[inst.symbol] = {
+            "strategy": strat.name, "bar": bar_ts, "reason": signal_.reason,
+            "decision": "HOLD" if signal_.is_hold else f"exit={signal_.exit} enter={signal_.enter}",
+            "info": signal_.info, "evaluated_at": datetime.now(timezone.utc).isoformat()}
 
         if pos and pos.trailing_mult:
             last = bars.iloc[-1]
@@ -196,11 +207,38 @@ class TradingBot:
                 ok = False
                 log.error("risk tick failed for %s: %s: %s", sym, type(exc).__name__, exc)
         try:
-            pf.update_daily_pnl(pf.account().equity)
+            acct = pf.account()
+            pf.update_daily_pnl(acct.equity)
         except Exception as exc:  # noqa: BLE001
             ok = False
             log.error("daily P&L update failed: %s", exc)
+        else:
+            self._publish_status(acct)
         return ok
+
+    def _publish_status(self, acct) -> None:
+        """Write status.json for the monitor page. Best effort: never affects trading."""
+        try:
+            pf = self.portfolio
+            views = []
+            for sym, pos in list(pf.positions.items()):
+                try:
+                    self._last_price[sym] = self.md.last_price(config.INSTRUMENTS[sym])
+                except Exception:  # noqa: BLE001  (keep the last known price)
+                    pass
+                sma = (self.last_signals.get(sym, {}).get("info") or {}).get("sma")
+                views.append(position_view(pos, self._last_price.get(sym), sma))
+            try:
+                market_open = pf.market_open()
+            except Exception:  # noqa: BLE001
+                market_open = None
+            snap = build_snapshot(
+                started_at=self._started_at, mode="PAPER" if config.is_paper() else "LIVE",
+                market_open=market_open, equity=acct.equity, cash=acct.cash, positions=views,
+                signals=self.last_signals)
+            write_snapshot(self.status_path, snap)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("status snapshot skipped: %s: %s", type(exc).__name__, exc)
 
     # ------------------------------------------------------------------ startup
     def _wait_for_connection(self) -> None:
@@ -243,6 +281,27 @@ class TradingBot:
                              sym, exc)
         log.info("Tracking %d open position(s): %s", len(self.portfolio.positions),
                  ", ".join(self.portfolio.positions) or "none")
+        self._seed_signals()
+
+    def _seed_signals(self) -> None:
+        """Fill `last_signals` once at startup, for display only: after a restart the
+        current bar has usually been acted on already, so no decision would be recorded
+        (and the monitor would show nothing) until the next bar. Never places orders."""
+        for inst in config.INSTRUMENTS.values():
+            try:
+                strat = self.strategies[inst.strategy]
+                bars = self.md.get_bars(inst, strat.timeframe, strat.lookback_days)
+                if bars.empty:
+                    continue
+                pos = self.portfolio.positions.get(inst.symbol)
+                sig = strat.evaluate(inst.symbol, bars, pos.direction if pos else None)
+                self.last_signals[inst.symbol] = {
+                    "strategy": strat.name, "bar": bars.index[-1].isoformat(), "reason": sig.reason,
+                    "decision": "HOLD" if sig.is_hold else f"exit={sig.exit} enter={sig.enter}",
+                    "info": sig.info, "evaluated_at": datetime.now(timezone.utc).isoformat(),
+                    "seeded": True}
+            except Exception as exc:  # noqa: BLE001  (informational only)
+                log.debug("signal seed skipped for %s: %s", inst.symbol, exc)
 
     def _warn_on_asset_flags(self) -> None:
         for inst in config.INSTRUMENTS.values():

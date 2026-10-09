@@ -31,6 +31,7 @@ Always run the tests after touching `bot/` or `config.py`. Never run `bot.main` 
 - `bot/risk_manager.py` — ATR sizing (`stop_atr_mult` widens the hard stop and shrinks qty so loss stays 1%), caps, hard/trailing stops, correlation filter.
 - `bot/portfolio.py` — orders, positions, `state.json`, `trades.csv`, `daily_pnl.csv`.
 - `bot/data_feed.py`, `bot/indicators.py`, `bot/api_utils.py` — candles/prices, SMA/EMA/ATR, retry/backoff.
+- `bot/status.py` + `bot/monitor.py` (+ `monitor_page.html`) — read-only monitor. The bot writes `status.json` each risk tick (best effort, must never raise into trading); the page only reads local files, binds 127.0.0.1, and has no write/trade endpoints. Keep it that way.
 - `bot/backtest.py` — reuses the live strategy and risk code; keep it in sync when changing either.
 
 ## Rules that must not be broken

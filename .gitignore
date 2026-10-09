@@ -11,3 +11,6 @@ backtest_data/
 bot_console.log
 backtest_results*.png
 backtest_trades*.csv
+status.json
+status.json.tmp
+monitor_console.log

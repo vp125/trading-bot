@@ -162,3 +162,26 @@ Unregister-ScheduledTask AlpacaBot -Confirm:$false   # remove
 
 The PC must be awake and logged in. If it sleeps, the bot pauses and only the broker-side hard
 stops protect open positions. The daily-trend strategy acts once per daily bar, so quiet days are normal.
+
+## Monitor page (read-only)
+
+```powershell
+.venv\Scripts\python.exe -m bot.monitor        # then open http://127.0.0.1:8765
+```
+
+Shows bot health (heartbeat), equity / today / since-start, open positions with distance to the
+hard stop and to the 200-day SMA, the latest decision per instrument, equity by day, closed trades,
+recent events and network-retry counts. It refreshes every 30 s.
+
+* The bot writes `status.json` at the end of every 30 s risk tick; the page reads that plus
+  `state.json`, `daily_pnl.csv`, `trades.csv` and `bot.log`. It never calls the broker, holds no
+  API keys, has no endpoints that change anything, and listens on 127.0.0.1 only (foreign `Host`
+  headers are rejected).
+* Heartbeat older than 90 s shows STALE, older than 5 min shows DOWN. DOWN does not mean positions
+  are unprotected: their hard stops live at the broker.
+* The bot must be restarted once to start writing `status.json`.
+
+The monitor runs as a second Scheduled Task, `AlpacaBotMonitor` (starts at logon, restarts on
+failure, launcher `run_monitor.cmd`). `Start-ScheduledTask` / `Stop-ScheduledTask AlpacaBotMonitor`
+control it; open http://127.0.0.1:8765. When restarting either task, stop it, wait a few seconds,
+confirm no `python ... bot.main` / `run_bot.cmd` process is left, then start it again.

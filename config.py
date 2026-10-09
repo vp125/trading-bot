@@ -38,6 +38,7 @@ TRADES_CSV = BASE_DIR / "trades.csv"
 DAILY_PNL_CSV = BASE_DIR / "daily_pnl.csv"
 STATE_FILE = BASE_DIR / "state.json"      # open-position state survives restarts
 LOG_FILE = BASE_DIR / "bot.log"
+STATUS_FILE = BASE_DIR / "status.json"    # heartbeat + live snapshot for the monitor page
 
 # --------------------------------------------------------------------------- #
 # Instruments -> strategy mapping

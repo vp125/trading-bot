@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Bot Monitor</title>
+<style>
+  :root {
+    --bg:#f6f6f4; --card:#ffffff; --ink:#15151a; --ink2:#5b5b66; --line:#e4e4df;
+    --ok:#1a7f4b; --warn:#b36b00; --bad:#c0392b; --accent:#2a6fdb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg:#121317; --card:#1b1d23; --ink:#ececf0; --ink2:#9a9aa6; --line:#2b2e36;
+      --ok:#3ecf8e; --warn:#f0b24b; --bad:#ff6b5e; --accent:#6ea8ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .wrap { max-width:1080px; margin:0 auto; padding:16px; }
+  header { display:flex; flex-wrap:wrap; gap:10px 14px; align-items:center; margin-bottom:14px; }
+  h1 { font-size:18px; margin:0; }
+  .pill { padding:3px 10px; border-radius:999px; font-weight:600; font-size:12px; border:1px solid var(--line); }
+  .ok { color:var(--ok); } .stale { color:var(--warn); } .down, .neg { color:var(--bad); } .pos { color:var(--ok); }
+  .muted { color:var(--ink2); }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); margin-bottom:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .card .label { color:var(--ink2); font-size:12px; }
+  .card .val { font-size:22px; font-weight:650; font-variant-numeric:tabular-nums; }
+  section { margin-bottom:14px; }
+  h2 { font-size:14px; margin:0 0 8px; }
+  .tablewrap { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--ink2); font-weight:600; font-size:12px; }
+  td.l, th.l { text-align:left; white-space:normal; }
+  pre { margin:0; font:12px/1.5 ui-monospace, Consolas, monospace; white-space:pre-wrap; word-break:break-word; }
+  .events { max-height:260px; overflow:auto; }
+  svg { width:100%; height:130px; display:block; }
+  .banner { padding:10px 14px; border-radius:10px; margin-bottom:14px; border:1px solid var(--bad); color:var(--bad); font-weight:600; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Trading Bot Monitor</h1>
+    <span id="health" class="pill">loading…</span>
+    <span id="mode" class="pill muted"></span>
+    <span id="market" class="pill muted"></span>
+    <span id="fetched" class="muted"></span>
+  </header>
+  <div id="banner" class="banner" hidden></div>
+
+  <div class="grid">
+    <div class="card"><div class="label">Equity</div><div class="val" id="equity">–</div></div>
+    <div class="card"><div class="label">Today</div><div class="val" id="today">–</div></div>
+    <div class="card"><div class="label">Since start</div><div class="val" id="total">–</div></div>
+    <div class="card"><div class="label">Cash</div><div class="val" id="cash">–</div></div>
+    <div class="card"><div class="label">Network retries</div><div class="val" id="retries">–</div>
+      <div class="label" id="retries2"></div></div>
+  </div>
+
+  <section class="card"><h2>Open positions</h2><div class="tablewrap">
+    <table id="positions"><thead><tr>
+      <th>Symbol</th><th>Qty</th><th>Entry</th><th>Price</th><th>Unrealized</th>
+      <th>Hard stop</th><th>To stop</th><th>200d SMA</th><th>To SMA</th></tr></thead><tbody></tbody></table>
+  </div><div id="nopos" class="muted" hidden>No open positions.</div></section>
+
+  <section class="card"><h2>Latest decision per instrument</h2><div class="tablewrap">
+    <table id="signals"><thead><tr>
+      <th>Symbol</th><th class="l">Strategy</th><th class="l">Bar</th><th class="l">Decision</th><th class="l">Reason</th>
+      </tr></thead><tbody></tbody></table></div></section>
+
+  <section class="card"><h2>Equity by day</h2><svg id="chart" viewBox="0 0 600 130" preserveAspectRatio="none"></svg>
+    <div class="muted" id="chartnote"></div></section>
+
+  <section class="card"><h2>Closed trades</h2><div class="tablewrap">
+    <table id="trades"><thead><tr>
+      <th>Exit time (UTC)</th><th>Symbol</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&amp;L</th><th>Qty</th>
+      </tr></thead><tbody></tbody></table></div><div id="notrades" class="muted" hidden>No closed trades yet.</div></section>
+
+  <section class="card"><h2>Recent events</h2><div class="events"><pre id="events"></pre></div></section>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const usd = (x, d=2) => x == null ? "–" : (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString(undefined, {minimumFractionDigits:d, maximumFractionDigits:d});
+const pct = (x, d=2) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(d) + "%";
+const sgn = x => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
+function cell(tr, text, cls, left) { const td = document.createElement("td"); td.textContent = text; if (cls) td.className = cls; if (left) td.classList.add("l"); tr.appendChild(td); }
+function fill(tableId, rows) { const tb = $(tableId).tBodies[0]; tb.replaceChildren(); rows.forEach(r => { const tr = document.createElement("tr"); r.forEach(c => cell(tr, c[0], c[1], c[2])); tb.appendChild(tr); }); }
+function setVal(id, text, cls) { const e = $(id); e.textContent = text; e.className = "val " + (cls || ""); }
+
+function drawChart(rows) {
+  const svg = $("chart"); svg.replaceChildren();
+  const ys = rows.map(r => parseFloat(r.ending_equity)).filter(isFinite);
+  $("chartnote").textContent = ys.length < 2 ? "Needs at least two days of data." : `${rows[0].date} → ${rows[rows.length-1].date}`;
+  if (ys.length < 2) return;
+  const lo = Math.min(...ys), hi = Math.max(...ys), pad = (hi - lo) * 0.15 || 1;
+  const x = i => 10 + i * (580 / (ys.length - 1)), y = v => 120 - ((v - (lo - pad)) / ((hi + pad) - (lo - pad))) * 110;
+  const ns = "http://www.w3.org/2000/svg";
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", ys.map((v, i) => x(i) + "," + y(v)).join(" "));
+  line.setAttribute("fill", "none"); line.setAttribute("stroke", "var(--accent)"); line.setAttribute("stroke-width", "2");
+  svg.appendChild(line);
+  [[lo, "low"], [hi, "high"]].forEach(([v]) => { const t = document.createElementNS(ns, "text"); t.setAttribute("x", 12); t.setAttribute("y", y(v) - 3); t.setAttribute("fill", "var(--ink2)"); t.setAttribute("font-size", "10"); t.textContent = usd(v, 0); svg.appendChild(t); });
+}
+
+function render(d) {
+  const h = d.health, s = d.status;
+  const hp = $("health"); hp.textContent = h.state === "ok" ? "● RUNNING" : h.state === "stale" ? "● STALE" : "● DOWN"; hp.className = "pill " + h.state;
+  $("mode").textContent = s ? s.mode : ""; $("market").textContent = s ? (s.market_open == null ? "market ?" : s.market_open ? "market open" : "market closed") : "";
+  const b = $("banner");
+  if (h.state !== "ok") { b.hidden = false; b.textContent = h.state === "down" ? "Bot is not publishing status (" + h.detail + "). Open positions still have their broker-side stops." : "Heartbeat is late (" + h.detail + ")."; } else b.hidden = true;
+
+  setVal("equity", usd(s && s.equity)); setVal("cash", usd(s && s.cash));
+  const dayStart = d.day && d.day.start_equity, dayPnl = s && dayStart ? s.equity - dayStart : null;
+  setVal("today", dayPnl == null ? "–" : usd(dayPnl) + "  " + pct(dayPnl / dayStart * 100), sgn(dayPnl));
+  setVal("total", pct(d.total_return_pct), sgn(d.total_return_pct));
+  const wd = d.log.warnings_by_day, today = d.now.slice(0, 10);
+  const lastDay = Object.keys(wd).sort().pop(); setVal("retries", String(wd[today] ?? wd[lastDay] ?? 0));
+  $("retries2").textContent = d.log.deep_retries ? d.log.deep_retries + " reached retry 3+ (check log)" : "all recovered on first retries";
+
+  const pos = (s && s.positions) || [];
+  $("nopos").hidden = pos.length > 0; $("positions").hidden = pos.length === 0;
+  fill("positions", pos.map(p => [[p.symbol], [p.qty], [usd(p.entry_price)], [usd(p.price)],
+    [usd(p.unrealized) + " (" + pct(p.unrealized_pct) + ")", sgn(p.unrealized)], [usd(p.hard_stop)],
+    [pct(p.to_stop_pct, 1), p.to_stop_pct != null && p.to_stop_pct < 1.5 ? "neg" : ""], [p.sma ? usd(p.sma) : "–"], [pct(p.to_sma_pct, 1)]]));
+
+  const sig = (s && s.signals) || {};
+  fill("signals", Object.keys(sig).sort().map(k => [[k], [sig[k].strategy, "", true], [sig[k].bar.slice(0, 16).replace("T", " "), "", true], [sig[k].decision, "", true], [sig[k].reason, "", true]]));
+  drawChart(d.daily_pnl);
+  const tr = d.trades.slice().reverse();
+  $("notrades").hidden = tr.length > 0; $("trades").hidden = tr.length === 0;
+  fill("trades", tr.map(t => [[t.timestamp.slice(0, 19).replace("T", " ")], [t.instrument], [t.direction], [usd(parseFloat(t.entry_price))], [usd(parseFloat(t.exit_price))], [usd(parseFloat(t.profit_loss)), sgn(parseFloat(t.profit_loss))], [t.position_size]]));
+  $("events").textContent = d.log.events.slice().reverse().join("\n") || "No events yet.";
+  $("fetched").textContent = "refreshed " + new Date().toLocaleTimeString();
+}
+
+async function tick() {
+  try { const r = await fetch("/api/status", {cache: "no-store"}); render(await r.json()); }
+  catch (e) { $("health").textContent = "● MONITOR OFFLINE"; $("health").className = "pill down"; }
+}
+tick(); setInterval(tick, 30000);
+</script>
+</body>
+</html>

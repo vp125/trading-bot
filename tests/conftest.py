@@ -23,3 +23,9 @@ def legacy_instruments(monkeypatch):
     monkeypatch.setitem(config.INSTRUMENTS, "BTC/USD",
                         config.Instrument("BTC/USD", config.CRYPTO, "momentum_breakout",
                                           allow_short=False))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_status_file(tmp_path, monkeypatch):
+    """Tests must never touch the real status.json that the live bot / monitor use."""
+    monkeypatch.setattr(config, "STATUS_FILE", tmp_path / "status.json")

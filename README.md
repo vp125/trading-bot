@@ -180,3 +180,8 @@ recent events and network-retry counts. It refreshes every 30 s.
 * Heartbeat older than 90 s shows STALE, older than 5 min shows DOWN. DOWN does not mean positions
   are unprotected: their hard stops live at the broker.
 * The bot must be restarted once to start writing `status.json`.
+
+The monitor runs as a second Scheduled Task, `AlpacaBotMonitor` (starts at logon, restarts on
+failure, launcher `run_monitor.cmd`). `Start-ScheduledTask` / `Stop-ScheduledTask AlpacaBotMonitor`
+control it; open http://127.0.0.1:8765. When restarting either task, stop it, wait a few seconds,
+confirm no `python ... bot.main` / `run_bot.cmd` process is left, then start it again.

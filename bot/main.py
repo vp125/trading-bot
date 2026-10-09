@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, Dict, List
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -31,6 +31,7 @@ log = logging.getLogger("bot")
 
 SCHEDULE_OFFSET_S = 5          # run just after a candle closes
 FAILURE_RETRY_S = 60
+MAX_ENTRY_ATTEMPTS = 3         # per symbol per bar, when an entry order does not fill
 
 
 @dataclass
@@ -61,6 +62,7 @@ class TradingBot:
         self.strategies = {name: STRATEGY_CLASSES[name](params)
                            for name, params in config.STRATEGY_PARAMS.items()}
         self._stop = False
+        self._entry_attempts: Dict[tuple, int] = {}
         for inst in config.INSTRUMENTS.values():
             strat = self.strategies[inst.strategy]
             self.portfolio.cooldown_seconds[inst.symbol] = (
@@ -113,27 +115,39 @@ class TradingBot:
         if signal_.exit and inst.symbol in pf.positions:
             pf.close_position(inst.symbol, reason=f"signal: {signal_.reason}")
         if signal_.enter and inst.symbol not in pf.positions:
-            self._try_enter(inst, strat, signal_.enter, atr_now, float(bars["close"].iloc[-1]),
-                            signal_.reason)
+            if not self._try_enter(inst, strat, signal_.enter, atr_now,
+                                   float(bars["close"].iloc[-1]), signal_.reason):
+                # The order was sent but did not fill (or was rejected). Leave the bar
+                # un-acted so the next poll retries, up to MAX_ENTRY_ATTEMPTS.
+                key = (inst.symbol, bar_ts)
+                self._entry_attempts[key] = self._entry_attempts.get(key, 0) + 1
+                if self._entry_attempts[key] < MAX_ENTRY_ATTEMPTS:
+                    log.warning("[%s] %s entry not completed (attempt %d/%d); will retry next poll",
+                                strat.name, inst.symbol, self._entry_attempts[key], MAX_ENTRY_ATTEMPTS)
+                    return
+                log.error("[%s] %s entry failed %d times for bar %s; giving up until the next bar",
+                          strat.name, inst.symbol, MAX_ENTRY_ATTEMPTS, bar_ts)
         pf.set_last_bar(inst.symbol, bar_ts)
 
     def _try_enter(self, inst, strat, direction: str, atr_now: float,
-                   bar_close: float, reason: str) -> None:
+                   bar_close: float, reason: str) -> bool:
+        """True when the entry is settled (filled, or deliberately skipped);
+        False when an order was attempted but did not fill / was rejected."""
         pf = self.portfolio
         sym = inst.symbol
         if direction == "short" and not inst.allow_short:
             log.info("%s short signal ignored: instrument cannot be sold short on Alpaca", sym)
-            return
+            return True
         if pf.in_cooldown(sym):
             log.info("%s %s entry skipped: cooling down after a stop-out", sym, direction)
-            return
+            return True
         allowed, why = self.risk.correlation_allows(sym, direction, pf.positions)
         if not allowed:
             log.info("%s entry blocked - %s", sym, why)
-            return
+            return True
         if not (atr_now > 0):
             log.warning("%s ATR unavailable; no entry", sym)
-            return
+            return True
 
         price = self.md.last_price(inst)
         acct = pf.account()
@@ -144,16 +158,17 @@ class TradingBot:
         if size is None:
             log.warning("%s sizing produced no tradable quantity (price=%.2f atr=%.4f)",
                         sym, price, atr_now)
-            return
+            return True
         log.info("%s sizing: qty=%s notional=$%.0f risk=$%.2f atr=%.4f%s", sym, size.qty,
                  size.notional, size.risk_dollars, atr_now,
                  f" [capped by {size.capped_by}]" if size.capped_by else "")
         try:
-            pf.open_position(inst, direction, size.qty, size.risk_dollars, atr_now,
-                             strat.name, strat.trailing_atr_mult)
+            return pf.open_position(inst, direction, size.qty, size.risk_dollars, atr_now,
+                                    strat.name, strat.trailing_atr_mult) is not None
         except APIError as exc:
             # e.g. 403 "asset is not shortable" / insufficient buying power
             log.error("%s %s order rejected: %s", sym, direction, exc)
+            return False
 
     # ---------------------------------------------------------------- risk tick
     def risk_tick(self) -> bool:

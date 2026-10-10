@@ -80,7 +80,7 @@ def test_http_serves_page_and_api_but_rejects_foreign_host_and_writes():
     t.start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
     try:
-        assert b"Trading Bot Monitor" in urllib.request.urlopen(base + "/").read()
+        assert b"Alpaca Bot Monitor" in urllib.request.urlopen(base + "/").read()
         assert "health" in json.loads(urllib.request.urlopen(base + "/api/status").read())
         req = urllib.request.Request(base + "/api/status", headers={"Host": "evil.example"})
         with pytest.raises(urllib.error.HTTPError) as e:
